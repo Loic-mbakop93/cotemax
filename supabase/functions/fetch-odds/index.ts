@@ -116,12 +116,25 @@ Deno.serve(async (req) => {
     if (snapErr) return jsonError(`Snapshot insert: ${snapErr.message}`, 500)
   }
 
-  // ── 4. Purge snapshots older than 24h ──────────────────────
-  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-  await supabase.from('odds_snapshots').delete().lt('fetched_at', cutoff)
+  // ── 4. Cleanup: delete matches older than 2 days ───────────
+  // odds_snapshots are cascade-deleted automatically via FK
+  const matchCutoff = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()
+  const { count: deletedMatches } = await supabase
+    .from('matches')
+    .delete({ count: 'exact' })
+    .lt('commence_time', matchCutoff)
+
+  // Also purge any orphaned snapshots older than 48h (safety net)
+  const snapCutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString()
+  await supabase.from('odds_snapshots').delete().lt('fetched_at', snapCutoff)
 
   return new Response(
-    JSON.stringify({ ok: true, matches: matchRows.length, snapshots: snapshotRows.length }),
+    JSON.stringify({
+      ok: true,
+      matches: matchRows.length,
+      snapshots: snapshotRows.length,
+      deleted_matches: deletedMatches ?? 0,
+    }),
     { headers: { 'Content-Type': 'application/json' } },
   )
 })
