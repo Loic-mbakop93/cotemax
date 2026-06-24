@@ -6,11 +6,24 @@ const REGION        = 'eu'
 const MARKETS       = 'h2h'
 const ODDS_API_URL  = `https://api.the-odds-api.com/v4/sports/${SPORT_KEY}/odds/?apiKey=${ODDS_API_KEY}&regions=${REGION}&markets=${MARKETS}&oddsFormat=decimal`
 
-// Bookmaker keys we care about (superset – we keep whatever the API returns)
-const KNOWN_BOOKMAKERS = new Set([
-  '1xbet', 'betway', 'bet365', 'melbet', 'paripesa',
-  'betpawa', 'betwinner', 'premierbet', 'linebet', 'betandyou', 'megapari',
-])
+// Map Odds API keys → display names for bookmakers we want to show
+// African/local bookmakers will be added via scrapers
+const BOOKMAKER_DISPLAY: Record<string, string> = {
+  onexbet:      '1xBet',
+  betway:       'Betway',
+  bet365:       'Bet365',
+  williamhill:  'William Hill',
+  pinnacle:     'Pinnacle',
+  unibet_fr:    'Unibet',
+  marathonbet:  'Marathonbet',
+  betclic_fr:   'Betclic',
+  winamax_fr:   'Winamax',
+  betsson:      'Betsson',
+  nordicbet:    'NordicBet',
+  leovegas_se:  'LeoVegas',
+  matchbook:    'Matchbook',
+  betfair_ex_eu:'Betfair',
+}
 
 Deno.serve(async (req) => {
   // Allow CRON invocation (POST) or manual GET
@@ -74,7 +87,7 @@ Deno.serve(async (req) => {
 
     for (const bm of game.bookmakers ?? []) {
       const key = bm.key.toLowerCase()
-      if (!KNOWN_BOOKMAKERS.has(key)) continue
+      // Accept all bookmakers the API returns
 
       const h2h = bm.markets?.find((m) => m.key === 'h2h')
       if (!h2h) continue

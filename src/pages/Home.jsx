@@ -25,11 +25,13 @@ export default function Home() {
   const [bestOdds,  setBestOdds]  = useState({})
   const [loading,   setLoading]   = useState(true)
   const [lastUpdate, setLastUpdate] = useState(null)
+  const [error,     setError]     = useState(null)
 
   useEffect(() => {
     let cancelled = false
     async function load() {
       setLoading(true)
+      setError(null)
       try {
         const dateStr = getDateRange(activeTab)
         const ms = await fetchMatchesForDate(dateStr)
@@ -45,6 +47,7 @@ export default function Home() {
         setLastUpdate(new Date())
       } catch (err) {
         console.error(err)
+        if (!cancelled) setError(err.message)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -89,6 +92,12 @@ export default function Home() {
         </div>
         <div className="section-sub">Coupe du Monde 2026 · Meilleures cotes surlignées</div>
       </div>
+
+      {error && (
+        <div style={{ background: '#2a0a0a', border: '1px solid #e53e3e', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 12, color: '#fc8181' }}>
+          ⚠️ Erreur: {error}
+        </div>
+      )}
 
       {/* Match list */}
       {loading ? (
