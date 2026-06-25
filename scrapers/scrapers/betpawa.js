@@ -1,97 +1,81 @@
 /**
- * betPawa Cameroon scraper
- * Target: https://www.betpawa.cm/events?sportId=1  (football)
- * Filters for FIFA World Cup matches and extracts 1X2 odds.
+ * betPawa Cameroon scraper — text-parse approach
+ *
+ * The page renders match data as structured plain text in this format:
+ *   HH:MM Day DD/MM
+ *   [Team 1]
+ *   [Team 2]
+ *   Football / International / FIFA World Cup
+ *   1X2 | Fin de Match
+ *   1
+ *   [home_odd]
+ *   X
+ *   [draw_odd]
+ *   2
+ *   [away_odd]
+ *
+ * We grab document.body.innerText and parse it with regex.
+ * betPawa protobuf API is not used (binary encoding, rotating fingerprint headers).
  */
 import 'dotenv/config'
-import { launchBrowser, newStealthPage, parseOdd } from '../lib/browser.js'
+import { chromium } from 'playwright'
 import { pushOdds } from '../lib/supabase.js'
 
-const URL     = 'https://www.betpawa.cm/events?sportId=1'
-const BM_KEY  = 'betpawa'
-// Keywords that identify World Cup matches on betPawa
-const WC_KEYWORDS = ['world cup', 'coupe du monde', 'fifa wc', 'wc 2026', 'world cup 2026']
+const PAGE_URL = 'https://www.betpawa.cm/events?sportId=1'
+const BM_KEY   = 'betpawa'
+
+const WC_MARKERS = ['fifa world cup', 'coupe du monde fifa', 'world cup 2026', 'world cup']
 
 export async function scrapeBetpawa() {
   console.log(`[${BM_KEY}] Starting scrape…`)
-  const browser = await launchBrowser()
-  const page    = await newStealthPage(browser)
+
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled',
+    ],
+  })
+
+  const ctx = await browser.newContext({
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    locale: 'fr-FR',
+    viewport: { width: 390, height: 844 }, // mobile viewport
+  })
+
+  // Hide automation fingerprint
+  await ctx.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+  })
+
+  const page = await ctx.newPage()
   const results = []
 
   try {
-    await page.goto(URL, { waitUntil: 'networkidle' })
+    await page.goto(PAGE_URL, { waitUntil: 'networkidle', timeout: 45000 })
+    await page.waitForTimeout(3000)
 
-    // Accept cookies if banner present
-    const cookieBtn = page.locator('button:has-text("Accept"), button:has-text("Accepter")').first()
-    if (await cookieBtn.isVisible().catch(() => false)) {
-      await cookieBtn.click()
-      await page.waitForTimeout(500)
+    // Scroll to load lazy content
+    for (let i = 0; i < 8; i++) {
+      await page.evaluate(() => window.scrollBy(0, window.innerHeight))
+      await page.waitForTimeout(600)
     }
+    await page.evaluate(() => window.scrollTo(0, 0))
+    await page.waitForTimeout(1000)
 
-    // betPawa groups matches under competition headers.
-    // Strategy: find all competition headers, filter for World Cup,
-    // then collect the match rows that follow.
-    const competitions = await page.locator('[class*="competition"], [class*="league"], [class*="category"]').all()
+    const bodyText = await page.evaluate(() => document.body.innerText)
+    console.log(`[${BM_KEY}] Page text length: ${bodyText.length}`)
 
-    for (const comp of competitions) {
-      const compText = (await comp.innerText().catch(() => '')).toLowerCase()
-      const isWC = WC_KEYWORDS.some(k => compText.includes(k))
-      if (!isWC) continue
-
-      // Sibling match rows
-      const matchRows = await comp.locator('xpath=following-sibling::*[contains(@class,"event") or contains(@class,"match")]').all()
-
-      for (const row of matchRows) {
-        // Stop if we hit the next competition header
-        const rowClass = await row.getAttribute('class').catch(() => '')
-        if (rowClass?.includes('competition') || rowClass?.includes('league')) break
-
-        const teams = await row.locator('[class*="team"], [class*="participant"]').allInnerTexts()
-        if (teams.length < 2) continue
-        const home_team = teams[0].trim()
-        const away_team = teams[teams.length - 1].trim()
-
-        // Odds buttons — betPawa shows 3 buttons for 1X2
-        const oddBtns = await row.locator('[class*="odd"], [class*="price"], button[data-outcome]').allInnerTexts()
-
-        if (oddBtns.length >= 3) {
-          results.push({
-            home_team,
-            away_team,
-            h2h_home: parseOdd(oddBtns[0]),
-            h2h_draw: parseOdd(oddBtns[1]),
-            h2h_away: parseOdd(oddBtns[2]),
-          })
-        }
-      }
-    }
-
-    // Fallback: if competition grouping didn't work, try flat event list
-    if (!results.length) {
-      console.log(`[${BM_KEY}] Trying flat event strategy…`)
-      const events = await page.locator('[class*="event-item"], [class*="match-row"], li[class*="event"]').all()
-
-      for (const ev of events) {
-        const text = (await ev.innerText().catch(() => '')).toLowerCase()
-        if (!WC_KEYWORDS.some(k => text.includes(k))) continue
-
-        const teams = await ev.locator('[class*="team"]').allInnerTexts()
-        const odds  = await ev.locator('[class*="odd"], [class*="price"]').allInnerTexts()
-
-        if (teams.length >= 2 && odds.length >= 3) {
-          results.push({
-            home_team: teams[0].trim(),
-            away_team: teams[teams.length - 1].trim(),
-            h2h_home:  parseOdd(odds[0]),
-            h2h_draw:  parseOdd(odds[1]),
-            h2h_away:  parseOdd(odds[2]),
-          })
-        }
-      }
-    }
+    const parsed = parseBodyText(bodyText)
+    results.push(...parsed)
 
     console.log(`[${BM_KEY}] Found ${results.length} World Cup match(es).`)
-    await pushOdds(BM_KEY, results)
+    if (results.length) {
+      await pushOdds(BM_KEY, results)
+    }
   } catch (err) {
     console.error(`[${BM_KEY}] Error:`, err.message)
   } finally {
@@ -101,7 +85,84 @@ export async function scrapeBetpawa() {
   return results
 }
 
+/**
+ * Parse the full body.innerText of betPawa to extract World Cup 1X2 odds.
+ *
+ * The text contains repeated blocks like:
+ *   02:00 Thu 25/06\nSouth Africa\nKorea Republic\nFootball / International / FIFA World Cup\n1X2 | Fin de Match\n1\n5.60\nX\n3.75\n2\n1.65
+ *
+ * Strategy: split on "Football / " section markers, find WC blocks, then
+ * look back 3 lines for team names and forward for 1X2 odds.
+ */
+function parseBodyText(text) {
+  const results = []
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0)
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].toLowerCase()
+
+    // Detect a line that marks this as a World Cup competition block
+    const isWC = WC_MARKERS.some(m => line.includes(m))
+    if (!isWC) continue
+
+    // The two lines immediately before the "Football / …" marker are the teams
+    // Format: ... [time] [team1] [team2] Football / Region / Competition ...
+    const team1 = lines[i - 2] ?? ''
+    const team2 = lines[i - 1] ?? ''
+
+    if (!team1 || !team2 || team1 === team2) continue
+    // Skip if team names look like odds (pure numbers) or UI labels
+    if (/^\d+(\.\d+)?$/.test(team1) || /^\d+(\.\d+)?$/.test(team2)) continue
+    if (team1.length < 3 || team2.length < 3) continue
+
+    // After the competition line, find "1X2 | Fin de Match" and then 1/X/2 odds
+    // Scan the next ~15 lines to find the 1X2 block (skip 1UP/2UP variants)
+    let home = null, draw = null, away = null
+
+    for (let j = i + 1; j < Math.min(i + 20, lines.length); j++) {
+      const jl = lines[j].toLowerCase()
+
+      // Skip 1X2 1UP / 1X2 2UP — we only want the base 1X2 market
+      if (jl.includes('1x2') && (jl.includes('1up') || jl.includes('2up'))) continue
+
+      // Found base 1X2 market
+      if (jl.includes('1x2')) {
+        // Expect: "1" → home_odd, "X" → draw_odd, "2" → away_odd
+        // Each occupies its own line in the rendered text
+        const oddsLines = []
+        for (let k = j + 1; k < Math.min(j + 10, lines.length); k++) {
+          const kl = lines[k]
+          if (oddsLines.length === 3) break
+          // Require decimal format (e.g. "5.60") — skips "1"/"2" label lines
+          if (/^\d+\.\d+$/.test(kl)) oddsLines.push(parseFloat(kl))
+        }
+        if (oddsLines.length === 3) {
+          home = oddsLines[0]
+          draw = oddsLines[1]
+          away = oddsLines[2]
+        }
+        break
+      }
+
+      // Stop if we hit the next competition or time marker
+      if (jl.startsWith('football /') || /^\d{2}:\d{2}/.test(lines[j])) break
+    }
+
+    if (home && away) {
+      results.push({
+        home_team: team1,
+        away_team: team2,
+        h2h_home: home,
+        h2h_draw: draw,
+        h2h_away: away,
+      })
+    }
+  }
+
+  return results
+}
+
 // Allow running directly: node scrapers/betpawa.js
-if (process.argv[1].includes('betpawa')) {
+if (process.argv[1]?.includes('betpawa')) {
   scrapeBetpawa()
 }

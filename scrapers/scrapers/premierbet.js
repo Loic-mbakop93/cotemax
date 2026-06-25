@@ -1,86 +1,185 @@
 /**
- * premierBet Cameroon scraper
- * Target: https://www.premierbet.cm/sports/football
- * Filters for FIFA World Cup matches and extracts 1X2 odds.
+ * premierBet Cameroon scraper — text-parse approach
+ *
+ * The page renders match data as structured plain text in this format:
+ *   dim. 28/06. 10:00
+ *   International | Coupe du Monde
+ *   [Team 1]
+ *   [Team 2]
+ *   1
+ *   [home_odd]
+ *   X
+ *   [draw_odd]
+ *   2
+ *   [away_odd]
+ *
+ * We grab document.body.innerText and parse it with regex.
  */
 import 'dotenv/config'
-import { launchBrowser, newStealthPage, parseOdd } from '../lib/browser.js'
+import { chromium } from 'playwright'
 import { pushOdds } from '../lib/supabase.js'
 
-const URL    = 'https://www.premierbet.cm/sports/football'
-const BM_KEY = 'premierbet'
-const WC_KEYWORDS = ['world cup', 'coupe du monde', 'fifa', 'wc 2026', 'world cup 2026']
+const PAGE_URL = 'https://www.premierbet.cm/sports/football'
+const BM_KEY   = 'premierbet'
+
+// French → English team name translation for World Cup nations
+const FR_TO_EN = {
+  'afrique du sud': 'South Africa',
+  'algérie': 'Algeria',
+  'algerie': 'Algeria',
+  'allemagne': 'Germany',
+  'angleterre': 'England',
+  'arabie saoudite': 'Saudi Arabia',
+  'argentine': 'Argentina',
+  'australie': 'Australia',
+  'autriche': 'Austria',
+  'belgique': 'Belgium',
+  'bolivie': 'Bolivia',
+  'brésil': 'Brazil',
+  'bresil': 'Brazil',
+  'cameroun': 'Cameroon',
+  'canada': 'Canada',
+  'chili': 'Chile',
+  'chine': 'China PR',
+  'colombie': 'Colombia',
+  'corée du nord': 'Korea DPR',
+  'corée du sud': 'Korea Republic',
+  'corée': 'Korea Republic',
+  'costa rica': 'Costa Rica',
+  'côte d´ivoire': "Ivory Coast",
+  'côte d\'ivoire': "Ivory Coast",
+  'croatie': 'Croatia',
+  'cuba': 'Cuba',
+  'curaçao': 'Curaçao',
+  'danemark': 'Denmark',
+  'ecosse': 'Scotland',
+  'équateur': 'Ecuador',
+  'equateur': 'Ecuador',
+  'espagne': 'Spain',
+  'états-unis': 'United States',
+  'etats-unis': 'United States',
+  'france': 'France',
+  'ghana': 'Ghana',
+  'grèce': 'Greece',
+  'honduras': 'Honduras',
+  'hongrie': 'Hungary',
+  'inde': 'India',
+  'iran': 'IR Iran',
+  'irlande': 'Ireland',
+  'islande': 'Iceland',
+  'italie': 'Italy',
+  'jamaïque': 'Jamaica',
+  'japon': 'Japan',
+  'jordanie': 'Jordan',
+  'kenya': 'Kenya',
+  'maroc': 'Morocco',
+  'mexique': 'Mexico',
+  'nigeria': 'Nigeria',
+  'norvège': 'Norway',
+  'nouvelle-zélande': 'New Zealand',
+  'pakistan': 'Pakistan',
+  'panama': 'Panama',
+  'paraguay': 'Paraguay',
+  'pays-bas': 'Netherlands',
+  'pérou': 'Peru',
+  'perou': 'Peru',
+  'pologne': 'Poland',
+  'portugal': 'Portugal',
+  'qatar': 'Qatar',
+  'république de corée': 'Korea Republic',
+  'republique de coree': 'Korea Republic',
+  'république tchèque': 'Czechia',
+  'republique tcheque': 'Czechia',
+  'roumanie': 'Romania',
+  'russie': 'Russia',
+  'sénégal': 'Senegal',
+  'senegal': 'Senegal',
+  'serbie': 'Serbia',
+  'slovaquie': 'Slovakia',
+  'slovénie': 'Slovenia',
+  'suède': 'Sweden',
+  'suede': 'Sweden',
+  'suisse': 'Switzerland',
+  'tunisie': 'Tunisia',
+  'turquie': 'Turkey',
+  'ukraine': 'Ukraine',
+  'uruguay': 'Uruguay',
+  'venezuela': 'Venezuela',
+  // Additional names seen in premierBet
+  'irak': 'Iraq',
+  'cap vert': 'Cape Verde',
+  'egypte': 'Egypt',
+  'égypte': 'Egypt',
+  'rép. dém. du congo': 'DR Congo',
+  'rep. dem. du congo': 'DR Congo',
+  'république démocratique du congo': 'DR Congo',
+  'ouzbékistan': 'Uzbekistan',
+  'ouzbekistan': 'Uzbekistan',
+  'oman': 'Oman',
+  'bahreïn': 'Bahrain',
+  'bahrain': 'Bahrain',
+}
+
+function translateTeamName(name) {
+  const lower = name.toLowerCase().normalize('NFC')
+  return FR_TO_EN[lower] ?? name
+}
+
+const WC_MARKERS = [
+  'coupe du monde',
+  'world cup',
+  'international | coupe du monde',
+]
 
 export async function scrapePremierbet() {
   console.log(`[${BM_KEY}] Starting scrape…`)
-  const browser = await launchBrowser()
-  const page    = await newStealthPage(browser)
+
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled',
+    ],
+  })
+
+  const ctx = await browser.newContext({
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    locale: 'fr-FR',
+    viewport: { width: 390, height: 844 },
+  })
+
+  await ctx.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+  })
+
+  const page = await ctx.newPage()
   const results = []
 
   try {
-    await page.goto(URL, { waitUntil: 'networkidle' })
+    await page.goto(PAGE_URL, { waitUntil: 'load', timeout: 45000 })
+    await page.waitForTimeout(4000)
 
-    // Accept cookies / age verification if present
-    for (const selector of [
-      'button:has-text("Accept")',
-      'button:has-text("Accepter")',
-      'button:has-text("J\'ai 18")',
-      '[class*="cookie"] button',
-      '[class*="modal"] button:has-text("OK")',
-    ]) {
-      const btn = page.locator(selector).first()
-      if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
-        await btn.click()
-        await page.waitForTimeout(500)
-      }
+    // Scroll to load lazy content
+    for (let i = 0; i < 8; i++) {
+      await page.evaluate(() => window.scrollBy(0, window.innerHeight))
+      await page.waitForTimeout(600)
     }
+    await page.evaluate(() => window.scrollTo(0, 0))
+    await page.waitForTimeout(800)
 
-    // Wait for content to render
-    await page.waitForSelector('[class*="event"], [class*="match"], [class*="game"]', { timeout: 15000 })
-      .catch(() => console.log(`[${BM_KEY}] Selector timeout – page may have different structure`))
+    const bodyText = await page.evaluate(() => document.body.innerText)
+    console.log(`[${BM_KEY}] Page text length: ${bodyText.length}`)
 
-    // premierBet typically shows competition headers above groups of matches
-    // Strategy 1: competition header → child match rows
-    const headers = await page.locator('[class*="competition-header"], [class*="league-header"], [class*="sport-header"], h2, h3').all()
-
-    for (const header of headers) {
-      const headerText = (await header.innerText().catch(() => '')).toLowerCase()
-      if (!WC_KEYWORDS.some(k => headerText.includes(k))) continue
-
-      // Get parent container then find all match rows inside
-      const container = header.locator('xpath=ancestor::*[contains(@class,"competition") or contains(@class,"group")][1]')
-      const rows = await container.locator('[class*="event"], [class*="match"]').all()
-
-      for (const row of rows) {
-        const extracted = await extractMatchFromRow(row)
-        if (extracted) results.push(extracted)
-      }
-    }
-
-    // Strategy 2: data attributes (many modern betting sites use data-* attrs)
-    if (!results.length) {
-      console.log(`[${BM_KEY}] Trying data-attribute strategy…`)
-      const wcRows = await page.locator('[data-competition*="World Cup"], [data-league*="World Cup"], [data-tournament*="World"]').all()
-      for (const row of wcRows) {
-        const extracted = await extractMatchFromRow(row)
-        if (extracted) results.push(extracted)
-      }
-    }
-
-    // Strategy 3: full page text scan — look for rows with 3 numeric odds after team names
-    if (!results.length) {
-      console.log(`[${BM_KEY}] Trying full-page scan strategy…`)
-      const allRows = await page.locator('[class*="event-item"], [class*="match-item"], [class*="row"]').all()
-      for (const row of allRows) {
-        const text = (await row.innerText().catch(() => '')).toLowerCase()
-        if (!WC_KEYWORDS.some(k => text.includes(k))) continue
-        const extracted = await extractMatchFromRow(row)
-        if (extracted) results.push(extracted)
-      }
-    }
+    const parsed = parseBodyText(bodyText)
+    results.push(...parsed)
 
     console.log(`[${BM_KEY}] Found ${results.length} World Cup match(es).`)
-    await pushOdds(BM_KEY, results)
+    if (results.length) {
+      await pushOdds(BM_KEY, results)
+    }
   } catch (err) {
     console.error(`[${BM_KEY}] Error:`, err.message)
   } finally {
@@ -90,33 +189,74 @@ export async function scrapePremierbet() {
   return results
 }
 
-async function extractMatchFromRow(row) {
-  try {
-    // Team names
-    const teamEls = await row.locator('[class*="team"], [class*="participant"], [class*="competitor"]').allInnerTexts()
-    if (teamEls.length < 2) return null
+/**
+ * Parse the full body.innerText of premierBet to extract World Cup 1X2 odds.
+ *
+ * Page block structure:
+ *   [time line e.g. "dim. 28/06. 10:00"]
+ *   International | Coupe du Monde        ← WC marker line
+ *   [Team 1]
+ *   [Team 2]
+ *   1
+ *   [home_odd]
+ *   X
+ *   [draw_odd]
+ *   2
+ *   [away_odd]
+ */
+function parseBodyText(text) {
+  const results = []
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0)
 
-    const home_team = teamEls[0].trim()
-    const away_team = teamEls[teamEls.length - 1].trim()
-    if (!home_team || !away_team || home_team === away_team) return null
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].toLowerCase()
 
-    // Odds — look for 3 price buttons
-    const oddEls = await row.locator('[class*="odd"], [class*="price"], [class*="outcome"], [class*="coefficient"]').allInnerTexts()
-    if (oddEls.length < 3) return null
+    // Detect a World Cup competition marker line
+    const isWC = WC_MARKERS.some(m => line.includes(m))
+    if (!isWC) continue
 
-    const h2h_home = parseOdd(oddEls[0])
-    const h2h_draw = parseOdd(oddEls[1])
-    const h2h_away = parseOdd(oddEls[2])
+    // Team 1 and Team 2 are on the next two lines
+    const team1 = lines[i + 1] ?? ''
+    const team2 = lines[i + 2] ?? ''
 
-    if (!h2h_home && !h2h_away) return null
+    if (!team1 || !team2 || team1 === team2) continue
+    if (team1.length < 3 || team2.length < 3) continue
+    // Skip if they look like odds or UI text
+    if (/^\d+(\.\d+)?$/.test(team1) || /^\d+(\.\d+)?$/.test(team2)) continue
 
-    return { home_team, away_team, h2h_home, h2h_draw, h2h_away }
-  } catch {
-    return null
+    // Odds follow: "1", home_odd, "X", draw_odd, "2", away_odd
+    // Scan the next ~10 lines after team names
+    const oddsStart = i + 3
+    const numericLines = []
+
+    for (let j = oddsStart; j < Math.min(oddsStart + 12, lines.length); j++) {
+      // Require decimal format (e.g. "3.75") — skips "1"/"2" label lines
+      if (/^\d+\.\d+$/.test(lines[j])) {
+        numericLines.push(parseFloat(lines[j]))
+        if (numericLines.length === 3) break
+      }
+      // Stop if we hit the next match block (time pattern or WC marker)
+      const jl = lines[j].toLowerCase()
+      if (j > oddsStart && (WC_MARKERS.some(m => jl.includes(m)) || /^\w+\.\s+\d+\/\d+\./.test(lines[j]))) break
+    }
+
+    if (numericLines.length === 3) {
+      results.push({
+        home_team: translateTeamName(team1),
+        away_team: translateTeamName(team2),
+        h2h_home: numericLines[0],
+        h2h_draw: numericLines[1],
+        h2h_away: numericLines[2],
+      })
+      // Jump past the odds we just consumed
+      i += 2
+    }
   }
+
+  return results
 }
 
 // Allow running directly: node scrapers/premierbet.js
-if (process.argv[1].includes('premierbet')) {
+if (process.argv[1]?.includes('premierbet')) {
   scrapePremierbet()
 }
