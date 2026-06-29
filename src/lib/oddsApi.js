@@ -2,7 +2,6 @@ import { supabase } from './supabase.js'
 
 // Fetch matches with their best odds for a given date window
 export async function fetchMatchesForDate(dateStr) {
-  // dateStr: 'YYYY-MM-DD'
   const from = new Date(dateStr + 'T00:00:00Z').toISOString()
   const to   = new Date(dateStr + 'T23:59:59Z').toISOString()
 
@@ -39,7 +38,6 @@ export async function fetchBestOddsForMatches(matchIds) {
 
   if (error) throw error
 
-  // Group by match_id and find best per outcome
   const result = {}
   for (const row of data ?? []) {
     const m = result[row.match_id] ??= { home: null, draw: null, away: null, homeBm: '', drawBm: '', awayBm: '' }
@@ -69,7 +67,7 @@ export function fmtOdd(v) {
 }
 
 // French date formatting helpers
-const FR_DAYS = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam']
+const FR_DAYS   = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam']
 const FR_MONTHS = ['jan', 'fév', 'mar', 'avr', 'mai', 'jun', 'jul', 'aoû', 'sep', 'oct', 'nov', 'déc']
 
 export function fmtMatchTime(isoStr) {
@@ -90,7 +88,159 @@ export function getDateRange(offsetDays = 0) {
   return d.toISOString().slice(0, 10)
 }
 
-// Trigger the edge function manually (optional, in case cron isn't set up)
+// ── Country flag emojis ──────────────────────────────────────────
+
+function isoToEmoji(iso) {
+  return [...iso.toUpperCase()]
+    .map(c => String.fromCodePoint(0x1F1E6 + c.charCodeAt(0) - 65))
+    .join('')
+}
+
+// Team name (as returned by The Odds API) → ISO 3166-1 alpha-2 code
+const TEAM_ISO = {
+  'Afghanistan':              'AF',
+  'Albania':                  'AL',
+  'Algeria':                  'DZ',
+  'Andorra':                  'AD',
+  'Angola':                   'AO',
+  'Argentina':                'AR',
+  'Armenia':                  'AM',
+  'Australia':                'AU',
+  'Austria':                  'AT',
+  'Azerbaijan':               'AZ',
+  'Bahrain':                  'BH',
+  'Bangladesh':               'BD',
+  'Belarus':                  'BY',
+  'Belgium':                  'BE',
+  'Bolivia':                  'BO',
+  'Bosnia and Herzegovina':   'BA',
+  'Botswana':                 'BW',
+  'Brazil':                   'BR',
+  'Bulgaria':                 'BG',
+  'Burkina Faso':             'BF',
+  'Cameroon':                 'CM',
+  'Canada':                   'CA',
+  'Cape Verde':               'CV',
+  'Chile':                    'CL',
+  'China PR':                 'CN',
+  'Colombia':                 'CO',
+  'Congo DR':                 'CD',
+  'DR Congo':                 'CD',
+  'Costa Rica':               'CR',
+  'Croatia':                  'HR',
+  'Cuba':                     'CU',
+  'Curaçao':                  'CW',
+  'Curacao':                  'CW',
+  'Cyprus':                   'CY',
+  'Czechia':                  'CZ',
+  'Czech Republic':           'CZ',
+  'Denmark':                  'DK',
+  'Ecuador':                  'EC',
+  'Egypt':                    'EG',
+  'El Salvador':              'SV',
+  'England':                  'GB-ENG',
+  'Estonia':                  'EE',
+  'Ethiopia':                 'ET',
+  'Finland':                  'FI',
+  'France':                   'FR',
+  'Gabon':                    'GA',
+  'Georgia':                  'GE',
+  'Germany':                  'DE',
+  'Ghana':                    'GH',
+  'Greece':                   'GR',
+  'Guatemala':                'GT',
+  'Guinea':                   'GN',
+  'Haiti':                    'HT',
+  'Honduras':                 'HN',
+  'Hungary':                  'HU',
+  'Iceland':                  'IS',
+  'India':                    'IN',
+  'Indonesia':                'ID',
+  'IR Iran':                  'IR',
+  'Iran':                     'IR',
+  'Iraq':                     'IQ',
+  'Ireland':                  'IE',
+  'Israel':                   'IL',
+  'Italy':                    'IT',
+  'Ivory Coast':              'CI',
+  'Jamaica':                  'JM',
+  'Japan':                    'JP',
+  'Jordan':                   'JO',
+  'Kazakhstan':               'KZ',
+  'Kenya':                    'KE',
+  'Korea DPR':                'KP',
+  'Korea Republic':           'KR',
+  'Kosovo':                   'XK',
+  'Kuwait':                   'KW',
+  'Latvia':                   'LV',
+  'Lebanon':                  'LB',
+  'Libya':                    'LY',
+  'Lithuania':                'LT',
+  'Luxembourg':               'LU',
+  'Malaysia':                 'MY',
+  'Mali':                     'ML',
+  'Malta':                    'MT',
+  'Mexico':                   'MX',
+  'Moldova':                  'MD',
+  'Montenegro':               'ME',
+  'Morocco':                  'MA',
+  'Mozambique':               'MZ',
+  'Netherlands':              'NL',
+  'New Zealand':              'NZ',
+  'Nicaragua':                'NI',
+  'Nigeria':                  'NG',
+  'North Macedonia':          'MK',
+  'Norway':                   'NO',
+  'Oman':                     'OM',
+  'Panama':                   'PA',
+  'Paraguay':                 'PY',
+  'Peru':                     'PE',
+  'Philippines':              'PH',
+  'Poland':                   'PL',
+  'Portugal':                 'PT',
+  'Qatar':                    'QA',
+  'Romania':                  'RO',
+  'Russia':                   'RU',
+  'Saudi Arabia':             'SA',
+  'Scotland':                 'GB-SCT',
+  'Senegal':                  'SN',
+  'Serbia':                   'RS',
+  'Slovakia':                 'SK',
+  'Slovenia':                 'SI',
+  'South Africa':             'ZA',
+  'South Korea':              'KR',
+  'Spain':                    'ES',
+  'Sweden':                   'SE',
+  'Switzerland':              'CH',
+  'Syria':                    'SY',
+  'Tanzania':                 'TZ',
+  'Thailand':                 'TH',
+  'Tunisia':                  'TN',
+  'Turkey':                   'TR',
+  'Turkmenistan':             'TM',
+  'Uganda':                   'UG',
+  'Ukraine':                  'UA',
+  'United Arab Emirates':     'AE',
+  'United States':            'US',
+  'Uruguay':                  'UY',
+  'Uzbekistan':               'UZ',
+  'Venezuela':                'VE',
+  'Vietnam':                  'VN',
+  'Wales':                    'GB-WLS',
+  'Zambia':                   'ZM',
+  'Zimbabwe':                 'ZW',
+}
+
+export function getFlag(teamName) {
+  const iso = TEAM_ISO[teamName]
+  if (!iso) return '🏳️'
+  // Handle GB subdivisions (no emoji support — use GB flag)
+  if (iso.startsWith('GB-')) return isoToEmoji('GB')
+  if (iso === 'XK') return '🇽🇰' // Kosovo (unofficial)
+  return isoToEmoji(iso)
+}
+
+// Trigger the edge function manually
 export async function triggerOddsRefresh() {
   const { data, error } = await supabase.functions.invoke('fetch-odds')
   return { data, error }

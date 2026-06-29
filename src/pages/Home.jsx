@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import {
   fetchMatchesForDate,
@@ -7,6 +7,7 @@ import {
   fmtMatchTime,
   fmtMatchDate,
   getDateRange,
+  getFlag,
 } from '../lib/oddsApi'
 
 const DATE_TABS = [
@@ -19,16 +20,21 @@ const DATE_TABS = [
   { label: 'J+6',         offset: 6 },
 ]
 
+const INTERVAL_LIVE    = 60 * 1000
+const INTERVAL_DEFAULT = 5 * 60 * 1000
+
 export default function Home() {
-  const [activeTab, setActiveTab] = useState(0)
-  const [matches,   setMatches]   = useState([])
-  const [bestOdds,  setBestOdds]  = useState({})
-  const [loading,   setLoading]   = useState(true)
+  const [activeTab,  setActiveTab]  = useState(0)
+  const [matches,    setMatches]    = useState([])
+  const [bestOdds,   setBestOdds]   = useState({})
+  const [loading,    setLoading]    = useState(true)
   const [lastUpdate, setLastUpdate] = useState(null)
-  const [error,     setError]     = useState(null)
+  const [error,      setError]      = useState(null)
+  const timerRef = useRef(null)
 
   useEffect(() => {
     let cancelled = false
+
     async function load() {
       setLoading(true)
       setError(null)
@@ -45,25 +51,29 @@ export default function Home() {
           setBestOdds({})
         }
         setLastUpdate(new Date())
+
+        const hasLive = ms.some((m) => m.status === 'live')
+        clearTimeout(timerRef.current)
+        if (!cancelled) timerRef.current = setTimeout(load, hasLive ? INTERVAL_LIVE : INTERVAL_DEFAULT)
       } catch (err) {
         console.error(err)
         if (!cancelled) setError(err.message)
+        clearTimeout(timerRef.current)
+        if (!cancelled) timerRef.current = setTimeout(load, INTERVAL_DEFAULT)
       } finally {
         if (!cancelled) setLoading(false)
       }
     }
-    load()
 
-    // Refresh every 5 minutes
-    const timer = setInterval(load, 5 * 60 * 1000)
-    return () => { cancelled = true; clearInterval(timer) }
+    load()
+    return () => { cancelled = true; clearTimeout(timerRef.current) }
   }, [activeTab])
 
-  const dateLabel = fmtMatchDate(getDateRange(activeTab) + 'T12:00:00Z')
+  const hasLiveNow = matches.some((m) => m.status === 'live')
+  const dateLabel  = fmtMatchDate(getDateRange(activeTab) + 'T12:00:00Z')
 
   return (
     <div className="page">
-      {/* Date tabs */}
       <div className="date-tabs">
         {DATE_TABS.map((tab, i) => (
           <button
@@ -76,16 +86,16 @@ export default function Home() {
         ))}
       </div>
 
-      {/* Info bar */}
       {lastUpdate && !loading && (
         <div className="info-bar">
-          <div className="info-dot" />
-          Cotes actualisées • {lastUpdate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+          <div className={`info-dot${hasLiveNow ? ' live' : ''}`} />
+          {hasLiveNow
+            ? 'Matchs en cours · mise à jour chaque minute'
+            : `Cotes actualisées · ${lastUpdate.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`}
           &nbsp;&middot;&nbsp;Format décimal
         </div>
       )}
 
-      {/* Section header */}
       <div className="section-header">
         <div className="section-title">
           {activeTab === 0 ? "Matchs d'aujourd'hui" : `Matchs du ${dateLabel}`}
@@ -99,7 +109,6 @@ export default function Home() {
         </div>
       )}
 
-      {/* Match list */}
       {loading ? (
         <SkeletonList />
       ) : matches.length === 0 ? (
@@ -107,11 +116,7 @@ export default function Home() {
       ) : (
         <div className="match-list">
           {matches.map((match) => (
-            <MatchCard
-              key={match.id}
-              match={match}
-              best={bestOdds[match.id]}
-            />
+            <MatchCard key={match.id} match={match} best={bestOdds[match.id]} />
           ))}
         </div>
       )}
@@ -125,30 +130,54 @@ export default function Home() {
 }
 
 function MatchCard({ match, best }) {
-  const hasOdds = !!best?.home
-  const time = fmtMatchTime(match.commence_time)
-  const isLive = match.status === 'live'
+  const hasOdds  = !!best?.home
+  const time     = fmtMatchTime(match.commence_time)
+  const isLive   = match.status === 'live'
+  const isDone   = match.status === 'finished'
+  const hasScore = match.score_home != null && match.score_away != null
 
   return (
     <Link to={`/match/${match.id}`} className="match-card">
       <div className="match-card-header">
-        <span className="match-time">{time} • {fmtMatchDate(match.commence_time)}</span>
-        {isLive && <span className="match-live-badge">EN DIRECT</span>}
+        <span className="match-time">
+          {isLive ? '🔴 EN DIRECT' : isDone ? '✓ Terminé' : `${time} · ${fmtMatchDate(match.commence_time)}`}
+        </span>
+        {isLive && <span className="match-live-badge">LIVE</span>}
       </div>
+
       <div className="match-teams">
-        <span className="team-name home">{match.home_team}</span>
-        <span className="vs-badge">VS</span>
-        <span className="team-name away">{match.away_team}</span>
+        <div className="team-block home">
+          <span className="team-flag">{getFlag(match.home_team)}</span>
+          <span className="team-name home">{match.home_team}</span>
+        </div>
+
+        {hasScore ? (
+          <div className={`score-badge${isLive ? ' live' : ''}`}>
+            <span className="score-num">{match.score_home}</span>
+            <span className="score-sep">–</span>
+            <span className="score-num">{match.score_away}</span>
+          </div>
+        ) : (
+          <div className="vs-badge">VS</div>
+        )}
+
+        <div className="team-block away">
+          <span className="team-name away">{match.away_team}</span>
+          <span className="team-flag">{getFlag(match.away_team)}</span>
+        </div>
       </div>
+
       {hasOdds ? (
         <div className="match-odds-strip">
-          <OddsCell label="1 (Domicile)" value={best.home} bm={best.homeBm} />
-          <OddsCell label="Nul"          value={best.draw} bm={best.drawBm} />
-          <OddsCell label="2 (Extérieur)" value={best.away} bm={best.awayBm} />
+          <OddsCell label="1 (Dom.)"  value={best.home} bm={best.homeBm} />
+          <OddsCell label="Nul"       value={best.draw} bm={best.drawBm} />
+          <OddsCell label="2 (Ext.)"  value={best.away} bm={best.awayBm} />
         </div>
       ) : (
         <div className="match-odds-strip" style={{ padding: '10px 14px' }}>
-          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>Cotes non disponibles</span>
+          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+            {isDone ? 'Match terminé' : 'Cotes non disponibles'}
+          </span>
         </div>
       )}
     </Link>

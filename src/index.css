@@ -117,8 +117,14 @@ a { color: inherit; text-decoration: none; }
   padding: 0 14px 12px;
   display: flex; align-items: center; gap: 8px;
 }
+.team-block {
+  flex: 1; display: flex; align-items: center; gap: 6px;
+}
+.team-block.home { justify-content: flex-start; }
+.team-block.away { justify-content: flex-end; }
+.team-flag { font-size: 20px; line-height: 1; flex-shrink: 0; }
 .team-name {
-  flex: 1; font-size: 14px; font-weight: 700; line-height: 1.2;
+  font-size: 13px; font-weight: 700; line-height: 1.2;
 }
 .team-name.home { text-align: left; }
 .team-name.away { text-align: right; }
@@ -129,6 +135,34 @@ a { color: inherit; text-decoration: none; }
   border-radius: 50%; display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
 }
+
+/* ── Score badge ── */
+.score-badge {
+  display: flex; align-items: center; gap: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 10px;
+  flex-shrink: 0;
+}
+.score-badge.live {
+  border-color: var(--red-500);
+  background: rgba(229, 62, 62, 0.1);
+  animation: pulse 1.5s infinite;
+}
+.score-badge.large {
+  padding: 8px 18px;
+  border-radius: 12px;
+}
+.score-num {
+  font-size: 18px; font-weight: 900; color: var(--text);
+  min-width: 16px; text-align: center;
+}
+.score-badge.large .score-num { font-size: 28px; min-width: 24px; }
+.score-sep {
+  font-size: 14px; font-weight: 700; color: var(--text-3);
+}
+.score-badge.large .score-sep { font-size: 20px; }
 
 .match-odds-strip {
   background: var(--surface-2);
@@ -172,9 +206,13 @@ a { color: inherit; text-decoration: none; }
   display: flex; align-items: center; justify-content: center; gap: 12px;
   margin-bottom: 8px;
 }
-.hero-team { font-size: 18px; font-weight: 800; flex: 1; }
-.hero-team.home { text-align: right; }
-.hero-team.away { text-align: left; }
+.hero-team {
+  font-size: 15px; font-weight: 800; flex: 1;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+}
+.hero-team.home { text-align: center; }
+.hero-team.away { text-align: center; }
+.hero-flag { font-size: 36px; line-height: 1; }
 .hero-vs {
   font-size: 13px; font-weight: 700; color: var(--text-3);
   background: var(--surface-2); border-radius: 50%;
@@ -311,6 +349,7 @@ a { color: inherit; text-decoration: none; }
   font-size: 11px; color: var(--text-2);
 }
 .info-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green-400); flex-shrink: 0; }
+.info-dot.live { background: var(--red-500); animation: pulse 1.5s infinite; }
 
 /* ── Footer ── */
 .footer {

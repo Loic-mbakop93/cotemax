@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import {
@@ -7,15 +7,14 @@ import {
   fmtOdd,
   fmtMatchTime,
   fmtMatchDate,
+  getFlag,
 } from '../lib/oddsApi'
 
-// Priority bookmakers (shown by default) — local African market focus
 const PRIORITY_KEYS = new Set([
   '1xbet', 'onexbet', 'betway', 'bet365', 'melbet', 'paripesa',
   'betpawa', 'betwinner', 'premierbet', 'linebet', 'betandyou', 'megapari',
 ])
 
-// Display metadata fallback (for bookmakers not in DB)
 const BM_META = {
   '1xbet':      { name: '1xBet',        url: 'https://1xbet.cm' },
   onexbet:      { name: '1xBet',        url: 'https://1xbet.cm' },
@@ -44,49 +43,66 @@ const BM_META = {
   tipico_de:    { name: 'Tipico',       url: 'https://tipico.com' },
 }
 
+const INTERVAL_LIVE    = 60 * 1000
+const INTERVAL_DEFAULT = 5 * 60 * 1000
+
 export default function MatchDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const [match,       setMatch]       = useState(null)
-  const [rows,        setRows]        = useState([])
-  const [bookmakers,  setBookmakers]  = useState({})
-  const [loading,     setLoading]     = useState(true)
-  const [sortKey,     setSortKey]     = useState('home')
-  const [showOthers,  setShowOthers]  = useState(false)
+  const [match,      setMatch]      = useState(null)
+  const [rows,       setRows]       = useState([])
+  const [bookmakers, setBookmakers] = useState({})
+  const [loading,    setLoading]    = useState(true)
+  const [sortKey,    setSortKey]    = useState('home')
+  const [showOthers, setShowOthers] = useState(false)
+  const timerRef = useRef(null)
 
   useEffect(() => {
+    let cancelled = false
+
     async function load() {
-      setLoading(true)
       try {
         const [oddsData, bms] = await Promise.all([
           fetchOddsForMatch(id),
           fetchBookmakers(),
         ])
 
-        if (oddsData.length > 0) {
-          setMatch({
-            home_team:     oddsData[0].home_team,
-            away_team:     oddsData[0].away_team,
-            commence_time: oddsData[0].commence_time,
-            status:        oddsData[0].status,
-          })
-          setRows(oddsData)
-        } else {
-          const { data } = await supabase.from('matches').select('*').eq('id', id).single()
-          setMatch(data)
-          setRows([])
-        }
+        // Also fetch the match row directly for score/status
+        const { data: matchRow } = await supabase
+          .from('matches').select('*').eq('id', id).single()
+
+        if (cancelled) return
+
+        const matchInfo = matchRow ?? (oddsData.length > 0 ? {
+          home_team:     oddsData[0].home_team,
+          away_team:     oddsData[0].away_team,
+          commence_time: oddsData[0].commence_time,
+          status:        oddsData[0].status,
+          score_home:    null,
+          score_away:    null,
+        } : null)
+
+        setMatch(matchInfo)
+        setRows(oddsData)
 
         const bmMap = {}
         for (const bm of bms) bmMap[bm.key] = bm
         setBookmakers(bmMap)
+
+        // Smart refresh
+        const isLive = matchInfo?.status === 'live'
+        clearTimeout(timerRef.current)
+        if (!cancelled) timerRef.current = setTimeout(load, isLive ? INTERVAL_LIVE : INTERVAL_DEFAULT)
       } catch (err) {
         console.error(err)
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
+
+    setLoading(true)
     load()
+    return () => { cancelled = true; clearTimeout(timerRef.current) }
   }, [id])
 
   if (loading) return <LoadingDetail />
@@ -101,7 +117,10 @@ export default function MatchDetail() {
     </div>
   )
 
-  // Best odds across ALL rows (for yellow highlights)
+  const isLive   = match.status === 'live'
+  const isDone   = match.status === 'finished'
+  const hasScore = match.score_home != null && match.score_away != null
+
   const best = { home: 0, draw: 0, away: 0 }
   for (const r of rows) {
     if (r.h2h_home > best.home) best.home = r.h2h_home
@@ -110,9 +129,7 @@ export default function MatchDetail() {
   }
 
   const getBmInfo = (key) => bookmakers[key] ?? BM_META[key] ?? { name: key, url: '#' }
-
-  // Split into priority vs others
-  const sortFn = (a, b) => (b[`h2h_${sortKey}`] ?? 0) - (a[`h2h_${sortKey}`] ?? 0)
+  const sortFn    = (a, b) => (b[`h2h_${sortKey}`] ?? 0) - (a[`h2h_${sortKey}`] ?? 0)
   const priorityRows = [...rows].filter(r => PRIORITY_KEYS.has(r.bookmaker_key)).sort(sortFn)
   const otherRows    = [...rows].filter(r => !PRIORITY_KEYS.has(r.bookmaker_key)).sort(sortFn)
 
@@ -123,16 +140,31 @@ export default function MatchDetail() {
       {/* Match hero */}
       <div className="match-hero">
         <div className="match-hero-time">
-          {fmtMatchDate(match.commence_time)} · {fmtMatchTime(match.commence_time)}
-          {match.status === 'live' && (
-            <span className="match-live-badge" style={{ marginLeft: 8 }}>EN DIRECT</span>
-          )}
+          {isLive ? '🔴 EN DIRECT' : isDone ? '✓ Terminé' : `${fmtMatchDate(match.commence_time)} · ${fmtMatchTime(match.commence_time)}`}
         </div>
+
         <div className="match-hero-teams">
-          <div className="hero-team home">{match.home_team}</div>
-          <div className="hero-vs">VS</div>
-          <div className="hero-team away">{match.away_team}</div>
+          <div className="hero-team home">
+            <div className="hero-flag">{getFlag(match.home_team)}</div>
+            <div>{match.home_team}</div>
+          </div>
+
+          {hasScore ? (
+            <div className={`score-badge large${isLive ? ' live' : ''}`}>
+              <span className="score-num">{match.score_home}</span>
+              <span className="score-sep">–</span>
+              <span className="score-num">{match.score_away}</span>
+            </div>
+          ) : (
+            <div className="hero-vs">VS</div>
+          )}
+
+          <div className="hero-team away">
+            <div className="hero-flag">{getFlag(match.away_team)}</div>
+            <div>{match.away_team}</div>
+          </div>
         </div>
+
         <div className="match-hero-sub">Coupe du Monde FIFA 2026</div>
       </div>
 
@@ -181,19 +213,14 @@ export default function MatchDetail() {
             <div className="col-header center">Parier</div>
           </div>
 
-          {/* Priority bookmakers */}
           <div className="bookmaker-list">
             {priorityRows.length > 0 ? priorityRows.map((row) => (
               <BookmakerRow key={row.bookmaker_key} row={row} best={best} bm={getBmInfo(row.bookmaker_key)} />
-            )) : (
-              /* Fallback: show all if none are priority */
-              rows.sort(sortFn).map((row) => (
-                <BookmakerRow key={row.bookmaker_key} row={row} best={best} bm={getBmInfo(row.bookmaker_key)} />
-              ))
-            )}
+            )) : rows.sort(sortFn).map((row) => (
+              <BookmakerRow key={row.bookmaker_key} row={row} best={best} bm={getBmInfo(row.bookmaker_key)} />
+            ))}
           </div>
 
-          {/* Expand button for other bookmakers */}
           {priorityRows.length > 0 && otherRows.length > 0 && (
             <>
               <button
@@ -201,21 +228,15 @@ export default function MatchDetail() {
                 style={{
                   width: '100%', marginTop: 10, padding: '11px 14px',
                   background: 'var(--surface)', border: '1px solid var(--border)',
-                  borderRadius: showOthers ? `${8}px ${8}px 0 0` : 8,
+                  borderRadius: showOthers ? '8px 8px 0 0' : 8,
                   color: 'var(--text-2)', fontSize: 12, fontWeight: 600,
                   cursor: 'pointer', fontFamily: 'var(--font)',
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                 }}
               >
-                <span>
-                  {showOthers ? '▲' : '▼'}&nbsp;&nbsp;
-                  {showOthers ? 'Masquer' : 'Voir'} {otherRows.length} autres bookmakers internationaux
-                </span>
-                <span style={{ fontSize: 10, color: 'var(--text-3)' }}>
-                  {showOthers ? 'Réduire' : 'Développer'}
-                </span>
+                <span>{showOthers ? '▲' : '▼'}&nbsp;&nbsp;{showOthers ? 'Masquer' : 'Voir'} {otherRows.length} autres bookmakers internationaux</span>
+                <span style={{ fontSize: 10, color: 'var(--text-3)' }}>{showOthers ? 'Réduire' : 'Développer'}</span>
               </button>
-
               {showOthers && (
                 <div className="bookmaker-list" style={{ borderTop: 'none' }}>
                   {otherRows.map((row) => (
