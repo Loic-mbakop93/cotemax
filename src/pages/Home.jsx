@@ -10,6 +10,18 @@ import {
   getFlag,
 } from '../lib/oddsApi'
 
+// Returns the refresh interval in ms, or null if no refresh needed.
+// Live: 60s. Kickoff within 2h: 5 min. Otherwise: no refresh.
+function getRefreshInterval(matches) {
+  const now = Date.now()
+  for (const m of matches) {
+    if (m.status === 'live') return INTERVAL_LIVE
+    const msToKO = new Date(m.commence_time).getTime() - now
+    if (msToKO > 0 && msToKO < 2 * 60 * 60 * 1000) return INTERVAL_PREMATCH
+  }
+  return null
+}
+
 const DATE_TABS = [
   { label: "Aujourd'hui", offset: 0 },
   { label: 'Demain',      offset: 1 },
@@ -20,8 +32,8 @@ const DATE_TABS = [
   { label: 'J+6',         offset: 6 },
 ]
 
-const INTERVAL_LIVE    = 60 * 1000
-const INTERVAL_DEFAULT = 5 * 60 * 1000
+const INTERVAL_LIVE      = 60 * 1000      // 1 min — match in progress
+const INTERVAL_PREMATCH  = 5 * 60 * 1000  // 5 min — kickoff within 2 hours
 
 export default function Home() {
   const [activeTab,  setActiveTab]  = useState(0)
@@ -52,14 +64,13 @@ export default function Home() {
         }
         setLastUpdate(new Date())
 
-        const hasLive = ms.some((m) => m.status === 'live')
+        const interval = getRefreshInterval(ms)
         clearTimeout(timerRef.current)
-        if (!cancelled) timerRef.current = setTimeout(load, hasLive ? INTERVAL_LIVE : INTERVAL_DEFAULT)
+        if (!cancelled && interval) timerRef.current = setTimeout(load, interval)
       } catch (err) {
         console.error(err)
         if (!cancelled) setError(err.message)
-        clearTimeout(timerRef.current)
-        if (!cancelled) timerRef.current = setTimeout(load, INTERVAL_DEFAULT)
+        // No auto-retry on error — user can switch tabs to reload
       } finally {
         if (!cancelled) setLoading(false)
       }

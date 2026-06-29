@@ -43,8 +43,8 @@ const BM_META = {
   tipico_de:    { name: 'Tipico',       url: 'https://tipico.com' },
 }
 
-const INTERVAL_LIVE    = 60 * 1000
-const INTERVAL_DEFAULT = 5 * 60 * 1000
+const INTERVAL_LIVE     = 60 * 1000
+const INTERVAL_PREMATCH = 5 * 60 * 1000
 
 export default function MatchDetail() {
   const { id } = useParams()
@@ -89,10 +89,13 @@ export default function MatchDetail() {
         for (const bm of bms) bmMap[bm.key] = bm
         setBookmakers(bmMap)
 
-        // Smart refresh
-        const isLive = matchInfo?.status === 'live'
+        // Refresh only when live or within 2h of kickoff
+        const isLive    = matchInfo?.status === 'live'
+        const msToKO    = matchInfo ? new Date(matchInfo.commence_time).getTime() - Date.now() : Infinity
+        const isPreMatch = msToKO > 0 && msToKO < 2 * 60 * 60 * 1000
+        const interval  = isLive ? INTERVAL_LIVE : isPreMatch ? INTERVAL_PREMATCH : null
         clearTimeout(timerRef.current)
-        if (!cancelled) timerRef.current = setTimeout(load, isLive ? INTERVAL_LIVE : INTERVAL_DEFAULT)
+        if (!cancelled && interval) timerRef.current = setTimeout(load, interval)
       } catch (err) {
         console.error(err)
       } finally {
